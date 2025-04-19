@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData" autoUpload="Always" serverName="AWS (15)" remoteFilesAllowedToDisappearOnAutoupload="false">
+  <component name="PublishConfigData" autoUpload="Always" serverName="AWS (18)" remoteFilesAllowedToDisappearOnAutoupload="false">
     <serverData>
       <paths name="AWS">
         <serverdata>
@@ -45,6 +45,28 @@
         </serverdata>
       </paths>
       <paths name="AWS (15)">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/home/ubuntu/ShabnamSawda/FinalProject" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="AWS (16)">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/home/ubuntu/ShabnamSawda/FinalProject/dataset-loading" local="$PROJECT_DIR$/dataset-loading" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="AWS (17)">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/tmp/pycharm_project_593" local="$PROJECT_DIR$" />
+            <mapping deploy="/home/ubuntu/ShabnamSawda/FinalProject/dataset-loading" local="$PROJECT_DIR$/dataset-loading" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="AWS (18)">
         <serverdata>
           <mappings>
             <mapping deploy="/home/ubuntu/ShabnamSawda/FinalProject" local="$PROJECT_DIR$" />
