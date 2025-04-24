@@ -5,7 +5,7 @@ import csv
 
 print("Okay")
 
-root_dir = '/home/ubuntu/ShabnamSawda/FinalProject/Data/camera_lidar_semantic'
+root_dir = '../Data/camera_lidar_semantic'
 output_file = 'a2d2_image_mask_pairs.csv'
 
 subdirs = [d for d in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, d))]
