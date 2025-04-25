@@ -203,7 +203,7 @@ if __name__ == "__main__":
                 fps = num_images / (infer_end - infer_start)
 
                 # print
-                print(f"processed {i*args.batch} records in {bstop-bstart:.2f}s")
+                print(f"processed {i * args.batch} records in {bstop - bstart:.2f}s")
                 print(
                     f"batch {i}: "
                     f"Training_loss {loss:.4f}, Val_loss {avg_val_loss:.4f}, "
@@ -211,10 +211,130 @@ if __name__ == "__main__":
                     f"FPS {fps:.2f}"
                 )
 
-                # checkpoint
-                ckpt = os.path.join(args.checkpoint_dir, f"model-ep{epoch}-it{i}.pth")
-                torch.save(model.state_dict(), ckpt)
-                torch.save(model.state_dict(), os.path.join(args.checkpoint_dir, "latest.pth"))
+        # Save checkpoint after each epoch (this is now inside the epoch loop but outside the batch loop)
+        ckpt = os.path.join(args.checkpoint_dir, f"model-ep{epoch}.pth")
+        if os.path.exists(ckpt):
+            os.remove(ckpt)
+        with open(ckpt, "wb") as f:
+            torch.save(model.state_dict(), f)
 
-    # final save
-    torch.save(model.state_dict(), os.path.join(args.checkpoint-dir, "final_model.pth"))
+        # update "latest.pth"
+        latest = os.path.join(args.checkpoint_dir, "latest.pth")
+        if os.path.exists(latest):
+            os.remove(latest)
+        with open(latest, "wb") as f:
+            torch.save(model.state_dict(), f)
+
+    # final save (outside all loops)
+    torch.save(model.state_dict(), os.path.join(args.checkpoint_dir, "final_model.pth"))  # Fixed the typo here
+
+
+def save_segmentation_results(model, data_loader, output_dir, device, color_map=None):
+    """
+    Run inference on a dataset and save segmentation output images
+
+    Args:
+        model: Trained segmentation model
+        data_loader: DataLoader containing images to segment
+        output_dir: Directory where to save output masks
+        device: Device to run inference on
+        color_map: Optional dictionary mapping class IDs to RGB colors
+    """
+    import numpy as np
+    from PIL import Image
+
+    os.makedirs(output_dir, exist_ok=True)
+    model.eval()
+
+    with torch.no_grad():
+        for i, (inputs, _) in enumerate(data_loader):
+            inputs = inputs.to(device)
+            outputs = model(inputs)["out"]
+            preds = outputs.argmax(dim=1).cpu().numpy()
+
+            # Save each prediction in the batch
+            for j, pred in enumerate(preds):
+                # Convert class predictions to RGB if color map provided
+                if color_map:
+                    rgb_mask = np.zeros((pred.shape[0], pred.shape[1], 3), dtype=np.uint8)
+                    for class_id, color in color_map.items():
+                        rgb_mask[pred == class_id] = color
+                    img = Image.fromarray(rgb_mask)
+                else:
+                    # Otherwise save as grayscale class ID image
+                    img = Image.fromarray(pred.astype(np.uint8))
+
+                # Save the image
+                img.save(os.path.join(output_dir, f"prediction_{i}_{j}.png"))
+
+            if i % 10 == 0:
+                print(f"Processed {i} batches")
+
+
+# final save
+torch.save(model.state_dict(), os.path.join(args.checkpoint_dir, "final_model.pth"))
+
+
+# Add the function to save segmentation results
+def save_segmentation_results(model, data_loader, output_dir, device, color_map=None):
+    """
+    Run inference on a dataset and save segmentation output images
+    """
+    import numpy as np
+    from PIL import Image
+
+    os.makedirs(output_dir, exist_ok=True)
+    model.eval()
+
+    with torch.no_grad():
+        for i, (inputs, _) in enumerate(data_loader):
+            inputs = inputs.to(device)
+            outputs = model(inputs)["out"]
+            preds = outputs.argmax(dim=1).cpu().numpy()
+
+            # Save each prediction in the batch
+            for j, pred in enumerate(preds):
+                # Convert class predictions to RGB if color map provided
+                if color_map:
+                    rgb_mask = np.zeros((pred.shape[0], pred.shape[1], 3), dtype=np.uint8)
+                    for class_id, color in color_map.items():
+                        rgb_mask[pred == class_id] = color
+                    img = Image.fromarray(rgb_mask)
+                else:
+                    # Otherwise save as grayscale class ID image
+                    img = Image.fromarray(pred.astype(np.uint8))
+
+                # Save the image
+                img.save(os.path.join(output_dir, f"prediction_{i}_{j}.png"))
+
+            if i % 10 == 0:
+                print(f"Processed {i} batches")
+
+
+# Load color map from class list
+import json
+
+with open(args.class_list, 'r') as f:
+    class_info = json.load(f)
+
+# Convert class info to color map (adjust based on your class_list.json format)
+color_map = {}
+for class_name, class_data in class_info.items():
+    class_id = class_data.get('id')
+    color = class_data.get('color')
+    if class_id is not None and color is not None:
+        color_map[class_id] = color
+
+# Create an output directory for the segmentation results
+output_dir = os.path.join(args.checkpoint_dir, "segmentation_output")
+
+# Run inference and save results
+print("Generating segmentation outputs...")
+save_segmentation_results(
+    model,
+    val_loader,  # You can use your val_loader or test_loader here
+    output_dir,
+    device,
+    color_map
+)
+print(f"Segmentation results saved to {output_dir}")
