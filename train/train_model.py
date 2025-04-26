@@ -312,18 +312,39 @@ def save_segmentation_results(model, data_loader, output_dir, device, color_map=
 
 
 # Load color map from class list
+# Load color map from class list
 import json
 
 with open(args.class_list, 'r') as f:
     class_info = json.load(f)
 
-# Convert class info to color map (adjust based on your class_list.json format)
+# Try to determine the format and adapt
 color_map = {}
-for class_name, class_data in class_info.items():
-    class_id = class_data.get('id')
-    color = class_data.get('color')
-    if class_id is not None and color is not None:
-        color_map[class_id] = color
+try:
+    # Check if class_info is a list of dictionaries with 'id' and 'color' fields
+    if isinstance(class_info, list):
+        for item in class_info:
+            if isinstance(item, dict) and 'id' in item and 'color' in item:
+                color_map[item['id']] = item['color']
+    # Check if class_info is a dictionary with class names as keys
+    elif isinstance(class_info, dict):
+        for class_name, class_data in class_info.items():
+            if isinstance(class_data, dict):
+                # Format: {"class_name": {"id": 1, "color": [r,g,b]}}
+                if 'id' in class_data and 'color' in class_data:
+                    color_map[class_data['id']] = class_data['color']
+            else:
+                # Format might be {"class_id": [r,g,b]}
+                try:
+                    class_id = int(class_name)  # Try converting key to integer
+                    if isinstance(class_data, list) and len(class_data) == 3:
+                        color_map[class_id] = class_data
+                except (ValueError, TypeError):
+                    pass  # Not a valid integer key
+except Exception as e:
+    print(f"Warning: Error processing class list: {e}")
+    print("Using default grayscale output instead of color mapping")
+    color_map = None
 
 # Create an output directory for the segmentation results
 output_dir = os.path.join(args.checkpoint_dir, "segmentation_output")
