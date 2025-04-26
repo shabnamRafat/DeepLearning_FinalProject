@@ -1,11 +1,75 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData" autoUpload="Always" serverName="AWS (4)" remoteFilesAllowedToDisappearOnAutoupload="false">
+  <component name="PublishConfigData" autoUpload="Always" serverName="AWS (18)" remoteFilesAllowedToDisappearOnAutoupload="false">
     <serverData>
       <paths name="AWS">
         <serverdata>
           <mappings>
             <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="AWS (10)">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="AWS (11)">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="AWS (12)">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="AWS (13)">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="AWS (14)">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="AWS (15)">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/home/ubuntu/ShabnamSawda/FinalProject" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="AWS (16)">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/home/ubuntu/ShabnamSawda/FinalProject/dataset-loading" local="$PROJECT_DIR$/dataset-loading" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="AWS (17)">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/tmp/pycharm_project_593" local="$PROJECT_DIR$" />
+            <mapping deploy="/home/ubuntu/ShabnamSawda/FinalProject/dataset-loading" local="$PROJECT_DIR$/dataset-loading" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="AWS (18)">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/home/ubuntu/ShabnamSawda/FinalProject" local="$PROJECT_DIR$" />
           </mappings>
         </serverdata>
       </paths>
@@ -27,6 +91,41 @@
         <serverdata>
           <mappings>
             <mapping deploy="/home/ubuntu/ShabnamSawda/FinalProject" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="AWS (5)">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="AWS (6)">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="AWS (7)">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="AWS (8)">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="AWS (9)">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
           </mappings>
         </serverdata>
       </paths>
