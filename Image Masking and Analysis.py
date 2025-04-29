@@ -7,7 +7,7 @@ from pathlib import Path
 # =====================
 # PAGE SETUP
 # =====================
-st.set_page_config(page_title="Mask Analysis App (Folder Based)", layout="wide")
+st.set_page_config(page_title="Mask Analysis App", layout="wide")
 st.title("🖼️ Image Segmentation: Masking and Analysis")
 st.markdown("---")
 
