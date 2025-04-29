@@ -39,8 +39,11 @@ warnings.filterwarnings("ignore")
 
 
 def _fast_hist(pred, label, num_classes):
-    """Confusion‐matrix histogram for one flattened batch."""
-    mask = (label >= 0) & (label < num_classes)
+    mask = (label >= 0) & (label < num_classes) & (pred >= 0) & (pred < num_classes)
+    if not mask.all():
+        print(f"Warning: Some predictions or labels are out of range [0, {num_classes-1}]")
+        print(f"Pred range: {pred.min().item()} to {pred.max().item()}")
+        print(f"Label range: {label.min().item()} to {label.max().item()}")
     hist = torch.bincount(
         num_classes * label[mask] + pred[mask],
         minlength=num_classes ** 2
@@ -885,7 +888,171 @@ def save_segmentation_results(model, data_loader, output_dir, device, color_map=
 
 
 # Visualization function to create attention maps for transformers
-###
+def generate_attention_maps(model, data_loader, output_dir, device, num_samples=5):
+    """
+    Generate attention maps to visualize what the transformer is focusing on
+
+    Args:
+        model: Trained segmentation transformer model
+        data_loader: DataLoader containing images to analyze
+        output_dir: Directory where to save visualizations
+        device: Device to run inference on
+        num_samples: Number of samples to visualize
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LinearSegmentedColormap
+    import numpy as np
+    import math
+
+    os.makedirs(output_dir, exist_ok=True)
+    model.eval()
+
+    # Register a hook to get attention maps
+    attention_maps = []
+
+    def get_attention(module, input, output):
+        # Capture the attention maps (depends on transformer implementation)
+        # For MultiheadAttention, output is (attn_output, attn_output_weights)
+        if isinstance(output, tuple) and len(output) > 1:
+            attention_maps.append(output[1].detach())
+
+    # Attach hooks to attention layers
+    hooks = []
+    for name, module in model.named_modules():
+        if isinstance(module, nn.MultiheadAttention):
+            hooks.append(module.register_forward_hook(get_attention))
+
+    try:
+        # Create a custom colormap for the heatmap
+        colors = [(0, 0, 0.7), (0, 0.7, 1), (0, 1, 0), (0.7, 1, 0), (1, 0.7, 0), (1, 0, 0)]
+        cmap = LinearSegmentedColormap.from_list('custom_cmap', colors, N=256)
+
+        sample_count = 0
+        with torch.no_grad():
+            for inputs, targets in data_loader:
+                if sample_count >= num_samples:
+                    break
+
+                attention_maps.clear()  # Clear previous attention maps
+
+                inputs = inputs.to(device)
+                outputs = model(inputs)
+
+                # Process each image in the batch
+                for batch_idx in range(min(inputs.size(0), num_samples - sample_count)):
+                    if not attention_maps:
+                        print("No attention maps captured. Check model architecture.")
+                        continue
+
+                    # Get the input image
+                    input_img = inputs[batch_idx].cpu().permute(1, 2, 0).numpy()
+                    input_img = (input_img - input_img.min()) / (input_img.max() - input_img.min())
+
+                    # Get segmentation prediction
+                    pred_mask = outputs["out"][batch_idx].argmax(dim=0).cpu().numpy()
+
+                    # Visualize a subset of attention heads from different layers
+                    num_layers = min(3, len(attention_maps))
+                    num_heads_per_layer = min(3, attention_maps[0].size(1))
+
+                    fig, axs = plt.subplots(num_layers, num_heads_per_layer + 2,
+                                            figsize=(num_heads_per_layer * 4 + 8, num_layers * 4))
+
+                    # Add input image and segmentation prediction to the first two columns
+                    for layer_idx in range(num_layers):
+                        # Display original image
+                        if num_layers > 1:
+                            axs[layer_idx, 0].imshow(input_img)
+                            axs[layer_idx, 0].set_title('Input Image')
+                            axs[layer_idx, 0].axis('off')
+
+                            # Display segmentation mask
+                            axs[layer_idx, 1].imshow(pred_mask, cmap='tab20')
+                            axs[layer_idx, 1].set_title('Segmentation')
+                            axs[layer_idx, 1].axis('off')
+                        else:
+                            axs[0].imshow(input_img)
+                            axs[0].set_title('Input Image')
+                            axs[0].axis('off')
+
+                            # Display segmentation mask
+                            axs[1].imshow(pred_mask, cmap='tab20')
+                            axs[1].set_title('Segmentation')
+                            axs[1].axis('off')
+
+
+
+
+
+
+                    # Display attention maps
+                    for layer_idx in range(num_layers):
+                        attention = attention_maps[layer_idx][batch_idx]
+
+                        # For each attention head
+                        for head_idx in range(num_heads_per_layer):
+                            if head_idx < attention.size(0):  # Check if head exists
+                                # Get attention map for this head
+                                attn_map = attention[head_idx].cpu()
+
+                                # Reshape attention map to square for visualization
+                                # (assuming sequence length is perfect square for simplicity)
+                                # Reshape attention map to match patch grid (num_patches_h x num_patches_w)
+                                height, width = input_img.shape[:2]  # Input image dimensions (384, 512)
+                                patch_size = 16  # From --patch-size 16
+                                num_patches_h = height // patch_size  # 24
+                                num_patches_w = width // patch_size  # 32
+                                num_patches = num_patches_h * num_patches_w  # 768
+                                seq_len = attn_map.size(0)
+
+                                if seq_len != num_patches:
+                                    print(f"Warning: seq_len ({seq_len}) != num_patches ({num_patches})")
+                                    if seq_len == num_patches + 1:
+                                        attn_map = attn_map[1:]  # Skip CLS token
+                                    else:
+                                        attn_map = attn_map[:num_patches]
+
+                                if len(attn_map.shape) == 1:
+                                    if attn_map.size(0) < num_patches:
+                                        attn_map = torch.nn.functional.pad(attn_map,
+                                                                           (0, num_patches - attn_map.size(0)))
+                                    attn_map = attn_map[:num_patches].reshape(num_patches_h, num_patches_w)
+                                else:
+                                    attn_map = attn_map[:num_patches, :num_patches].reshape(num_patches_h,num_patches_w)
+
+                                # Resize attention map to match image dimensions for overlay
+                                resized_map = torch.nn.functional.interpolate(
+                                    attn_map.unsqueeze(0).unsqueeze(0),
+                                    size=input_img.shape[:2],
+                                    mode='bilinear',
+                                    align_corners=False
+                                ).squeeze().numpy()
+
+                                if num_layers > 1:
+                                    ax = axs[layer_idx, head_idx + 2]
+                                else:
+                                    ax = axs[head_idx + 2]
+
+                                im = ax.imshow(resized_map, cmap=cmap, alpha=0.7)
+                                ax.imshow(input_img, alpha=0.3)
+                                ax.set_title(f'Layer {layer_idx + 1}, Head {head_idx + 1}')
+                                ax.axis('off')
+
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(output_dir, f'attention_map_{sample_count}.png'), dpi=200)
+                    plt.close(fig)
+
+                    sample_count += 1
+                    if sample_count >= num_samples:
+                        break
+
+    finally:
+        # Remove hooks
+        for hook in hooks:
+            hook.remove()
+
+    print(f"Generated {sample_count} attention maps in {output_dir}")
+
 def generate_attention_maps(model, data_loader, output_dir, device, num_samples=5):
     """
     Generate attention maps to visualize what the transformer is focusing on
