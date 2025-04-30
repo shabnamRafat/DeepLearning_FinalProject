@@ -17,6 +17,10 @@ from torchvision.transforms import Resize
 from torchvision.transforms.functional import InterpolationMode
 import segmentation_models_pytorch as smp
 
+from torchvision import transforms
+from torchvision.transforms import functional as F
+import random
+
 import torch
 import gc
 
@@ -24,7 +28,6 @@ import gc
 torch.cuda.empty_cache()
 gc.collect()
 
-# Enable memory-saving features
 torch.backends.cudnn.benchmark = True
 
 # allow importing your custom dataset from ../dataset-loading
@@ -36,6 +39,94 @@ sys.path.insert(0, utils_dir)
 from Data_Preprocessing import A2D2_CSV_dataset  # your CSV‐based Dataset
 
 warnings.filterwarnings("ignore")
+
+
+# Augmentation class for segmentation
+# Updated SegmentationAugmentation class with fixed rotation handling
+class SegmentationAugmentation:
+    def __init__(self, p=0.5):
+        self.p = p
+
+    def __call__(self, image, mask):
+        # Convert mask to PIL Image if it's a tensor
+        if isinstance(mask, torch.Tensor):
+            mask_pil = transforms.ToPILImage()(mask.type(torch.uint8))
+        else:
+            mask_pil = mask
+
+        # Convert image to PIL Image if it's a tensor
+        if isinstance(image, torch.Tensor):
+            image_pil = transforms.ToPILImage()(image)
+        else:
+            image_pil = image
+
+        # Apply the same random transformations to both image and mask
+
+        # Random horizontal flip
+        if random.random() < self.p:
+            image_pil = F.hflip(image_pil)
+            mask_pil = F.hflip(mask_pil)
+
+        # Random vertical flip
+        if random.random() < self.p:
+            image_pil = F.vflip(image_pil)
+            mask_pil = F.vflip(mask_pil)
+
+        # Random rotation (0, 90, 180, 270 degrees)
+        if random.random() < self.p:
+            angle = random.choice([0, 90, 180, 270])
+            image_pil = F.rotate(image_pil, angle, interpolation=InterpolationMode.BILINEAR)
+            mask_pil = F.rotate(mask_pil, angle, interpolation=InterpolationMode.NEAREST)
+
+        # Color jitter (image only)
+        if random.random() < self.p:
+            brightness = 0.2 + random.random() * 0.2
+            contrast = 0.2 + random.random() * 0.2
+            saturation = 0.2 + random.random() * 0.2
+            hue = 0.1 * random.random()
+
+            image_pil = F.adjust_brightness(image_pil, brightness)
+            image_pil = F.adjust_contrast(image_pil, contrast)
+            image_pil = F.adjust_saturation(image_pil, saturation)
+            image_pil = F.adjust_hue(image_pil, hue)
+
+        return image_pil, mask_pil
+
+
+# Augmented dataset class that extends the base class
+class A2D2_CSV_dataset_Augmented(A2D2_CSV_dataset):
+    def __init__(self, csv_file, class_list, cache, height, width,
+                 transform=None, target_transform=None, apply_augmentation=False):
+        super().__init__(csv_file, class_list, cache, height, width, transform, target_transform)
+        self.apply_augmentation = apply_augmentation
+        self.augmentation = SegmentationAugmentation(p=0.5)
+        self.to_tensor = transforms.ToTensor()
+
+    def __getitem__(self, idx):
+        # Get original image and mask
+        image, mask = super().__getitem__(idx)
+
+        # Apply augmentation if enabled
+        if self.apply_augmentation:
+            # Convert tensors to PIL for augmentation
+            if isinstance(image, torch.Tensor):
+                image_pil = transforms.ToPILImage()(image)
+            else:
+                image_pil = image
+
+            if isinstance(mask, torch.Tensor):
+                mask_pil = transforms.ToPILImage()(mask.to(torch.uint8))
+            else:
+                mask_pil = mask
+
+            # Apply augmentations
+            image_pil, mask_pil = self.augmentation(image_pil, mask_pil)
+
+            # Convert back to tensors
+            image = self.to_tensor(image_pil)
+            mask = torch.tensor(np.array(mask_pil), dtype=torch.long)
+
+        return image, mask
 
 
 def fast_hist(pred, label, num_classes):
@@ -118,6 +209,46 @@ def create_deeplabv3plus_model(num_classes, encoder_name="resnet50", encoder_wei
             classes=num_classes,
             activation=activation
         )
+
+
+def calculate_class_weights(train_loader, num_classes, device):
+    """Calculate class weights for handling class imbalance"""
+    print("Calculating class weights...")
+    class_pixels = torch.zeros(num_classes, device=device)
+
+    # Count pixels for each class in training set
+    for i, (_, masks) in enumerate(train_loader):
+        masks = masks.to(device)
+        for c in range(num_classes):
+            class_pixels[c] += (masks == c).sum().item()
+
+        # Progress update
+        if i % 10 == 0:
+            print(f"Processed {i} batches for class weights calculation")
+
+        # Limit to a subset for efficiency
+        if i >= 100:  # Only scan part of the dataset for efficiency
+            break
+
+    # Handle empty classes
+    if (class_pixels == 0).any():
+        min_non_zero = class_pixels[class_pixels > 0].min()
+        class_pixels[class_pixels == 0] = min_non_zero
+
+    # Calculate weights: inverse frequency
+    total_pixels = class_pixels.sum()
+    class_weights = total_pixels / (class_pixels * num_classes)
+
+    # Normalize weights to prevent extremely large values
+    class_weights = torch.clip(class_weights, 0.1, 10.0)
+
+    # Print class distribution
+    print("Class pixels distribution:")
+    for c in range(num_classes):
+        percent = 100 * class_pixels[c] / total_pixels
+        print(f"Class {c}: {class_pixels[c]:.0f} pixels ({percent:.2f}%), weight: {class_weights[c]:.4f}")
+
+    return class_weights
 
 
 if __name__ == "__main__":
@@ -208,6 +339,10 @@ if __name__ == "__main__":
     parser.add_argument("--cutmix", type=str, default="False",
                         help="Whether to use cutmix augmentation")
 
+    # Add class imbalance handling
+    parser.add_argument("--handle-imbalance", type=str, default="True",
+                        help="Whether to handle class imbalance with weighted loss")
+
     # Early stopping
     parser.add_argument("--early-stopping", type=str, default="False",
                         help="Whether to use early stopping")
@@ -235,16 +370,30 @@ if __name__ == "__main__":
         interpolation=InterpolationMode.NEAREST,
     )
 
-    # Load the full dataset first
-    full_dataset = A2D2_CSV_dataset(
-        csv_file=args.pairs_csv,
-        class_list=args.class_list,
-        cache=args.cache,
-        height=args.height,
-        width=args.width,
-        transform=image_transform,
-        target_transform=target_transform,
-    )
+    # Load the full dataset with or without augmentation
+    if ast.literal_eval(args.augment):
+        full_dataset = A2D2_CSV_dataset_Augmented(
+            csv_file=args.pairs_csv,
+            class_list=args.class_list,
+            cache=args.cache,
+            height=args.height,
+            width=args.width,
+            transform=image_transform,
+            target_transform=target_transform,
+            apply_augmentation=True
+        )
+        print("Data augmentation enabled")
+    else:
+        full_dataset = A2D2_CSV_dataset(
+            csv_file=args.pairs_csv,
+            class_list=args.class_list,
+            cache=args.cache,
+            height=args.height,
+            width=args.width,
+            transform=image_transform,
+            target_transform=target_transform,
+        )
+        print("Data augmentation disabled")
 
     # Split the dataset into training, validation, and test sets
     dataset_size = len(full_dataset)
@@ -294,14 +443,27 @@ if __name__ == "__main__":
         persistent_workers=True,
     )
 
+    # Model, loss, optimizer, AMP
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Create DeepLabV3+ model using the segmentation-models-pytorch library
+    model = create_deeplabv3plus_model(
+        num_classes=args.classes,
+        encoder_name=args.encoder,  # Use encoder from args (default: resnet50)
+        encoder_weights=args.encoder_weights,  # Use weights from args (default: imagenet)
+        activation=None
+    )
+    model.to(device)
+
 
     # Define custom loss functions
     class FocalLoss(nn.Module):
-        def __init__(self, gamma=2.0, alpha=0.25):
+        def __init__(self, gamma=2.0, alpha=0.25, weight=None):
             super(FocalLoss, self).__init__()
             self.gamma = gamma
             self.alpha = alpha
-            self.ce = nn.CrossEntropyLoss(reduction='none')
+            self.weight = weight
+            self.ce = nn.CrossEntropyLoss(reduction='none', weight=weight)
 
         def forward(self, input, target):
             logp = self.ce(input, target)
@@ -311,9 +473,10 @@ if __name__ == "__main__":
 
 
     class DiceLoss(nn.Module):
-        def __init__(self, smooth=1.0):
+        def __init__(self, smooth=1.0, weight=None):
             super(DiceLoss, self).__init__()
             self.smooth = smooth
+            self.weight = weight  # Class weights
 
         def forward(self, input, target):
             N, C = input.size(0), input.size(1)
@@ -331,70 +494,78 @@ if __name__ == "__main__":
             intersection = (input_flat * target_flat).sum(dim=2)
             union = input_flat.sum(dim=2) + target_flat.sum(dim=2)
 
+            # Apply class weights if provided
+            if self.weight is not None:
+                intersection = intersection * self.weight.view(1, -1)
+                union = union * self.weight.view(1, -1)
+
             dice = (2 * intersection + self.smooth) / (union + self.smooth)
             loss = 1 - dice.mean()
             return loss
 
 
     class CombinedLoss(nn.Module):
-        def __init__(self, dice_weight=0.5, ce_weight=0.5, gamma=2.0, alpha=0.25):
+        def __init__(self, dice_weight=0.5, ce_weight=0.5, gamma=2.0, alpha=0.25, weight=None):
             super(CombinedLoss, self).__init__()
             self.dice_weight = dice_weight
             self.ce_weight = ce_weight
-            self.dice_loss = DiceLoss()
-            self.focal_loss = FocalLoss(gamma=gamma, alpha=alpha)
+            self.dice_loss = DiceLoss(weight=weight)
+            self.focal_loss = FocalLoss(gamma=gamma, alpha=alpha, weight=weight)
 
         def forward(self, input, target):
             return self.dice_weight * self.dice_loss(input, target) + \
                 self.ce_weight * self.focal_loss(input, target)
 
 
-    # Add Lovasz loss for better boundary segmentation
     class LovaszLoss(nn.Module):
-        def __init__(self):
+        def __init__(self, weight=None):
             super(LovaszLoss, self).__init__()
+            self.weight = weight
 
         def forward(self, input, target):
             # Import inside method to avoid dependency for those who don't use it
             try:
                 from pytorch_toolbelt.losses import LovaszLossSoftmax
-                lovasz = LovaszLossSoftmax()
+                lovasz = LovaszLossSoftmax(weight=self.weight)
                 return lovasz(input, target)
             except ImportError:
                 print("Warning: pytorch_toolbelt not installed, falling back to CE loss")
-                return nn.CrossEntropyLoss()(input, target)
+                return nn.CrossEntropyLoss(weight=self.weight)(input, target)
 
 
-    # Model, loss, optimizer, AMP
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Calculate class weights if handling imbalance is enabled
+    class_weights = None
+    if ast.literal_eval(args.handle_imbalance):
+        print("Handling class imbalance with weighted loss...")
+        class_weights = calculate_class_weights(train_loader, args.classes, device)
+    else:
+        print("Not handling class imbalance")
 
-    # Create DeepLabV3+ model using the segmentation-models-pytorch library
-    model = create_deeplabv3plus_model(
-        num_classes=args.classes,
-        encoder_name=args.encoder,  # Use encoder from args (default: resnet50)
-        encoder_weights=args.encoder_weights,  # Use weights from args (default: imagenet)
-        activation=None
-    )
-    model.to(device)
-
-    # Initialize loss function based on argument
+    # Initialize loss function based on argument, with class weights if available
     if args.loss == "ce":
-        criterion = nn.CrossEntropyLoss()
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
+        print("Using Cross Entropy Loss")
     elif args.loss == "focal":
-        criterion = FocalLoss(gamma=args.focal_gamma, alpha=args.focal_alpha)
+        criterion = FocalLoss(gamma=args.focal_gamma, alpha=args.focal_alpha, weight=class_weights)
+        print("Using Focal Loss")
     elif args.loss == "dice":
-        criterion = DiceLoss()
+        criterion = DiceLoss(weight=class_weights)
+        print("Using Dice Loss")
     elif args.loss == "combined":
         criterion = CombinedLoss(
             dice_weight=args.dice_weight,
             ce_weight=args.ce_weight,
             gamma=args.focal_gamma,
-            alpha=args.focal_alpha
+            alpha=args.focal_alpha,
+            weight=class_weights
         )
+        print("Using Combined Loss")
     elif args.loss == "lovasz":
-        criterion = LovaszLoss()
+        criterion = LovaszLoss(weight=class_weights)
+        print("Using Lovasz Loss")
     else:
-        criterion = nn.CrossEntropyLoss()  # Default
+        criterion = nn.CrossEntropyLoss(weight=class_weights)  # Default
+        print("Using Default Cross Entropy Loss")
 
     # Initialize optimizer based on argument
     if args.optimizer == "sgd":
@@ -469,6 +640,10 @@ if __name__ == "__main__":
                 loss = criterion(logits, masks)
 
             scaler.scale(loss).backward()
+
+            # Add gradient clipping for stability
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
             scaler.step(optimizer)
             scaler.update()
 
@@ -670,13 +845,21 @@ if __name__ == "__main__":
     print(f"Test Mean Dice: {test_metrics['mean_dice']:.4f}")
     print(f"Test Boundary F1: {test_metrics['bf_score']:.4f}")
 
+    # Calculate per-class performance for visualization
+    class_ious = test_metrics['iou'].cpu().numpy()
+    class_f1 = test_metrics['f1_score'].cpu().numpy()
+
     # Save test results
     test_results_path = os.path.join(args.checkpoint_dir, "test_results.json")
     with open(test_results_path, 'w') as f:
         json.dump({
             'loss': avg_test_loss,
             **{k: v if isinstance(v, (int, float)) else v.tolist()
-               for k, v in test_metrics.items()}
+               for k, v in test_metrics.items()},
+            'class_performance': {
+                'iou': class_ious.tolist(),
+                'f1': class_f1.tolist()
+            }
         }, f, indent=2)
 
     # Save the final model
@@ -684,9 +867,60 @@ if __name__ == "__main__":
     torch.save({
         'model_state_dict': model.state_dict(),
         'test_metrics': test_metrics,
-        'args': vars(args)
+        'args': vars(args),
+        'class_weights': class_weights.cpu().numpy().tolist() if class_weights is not None else None
     }, final_model_path)
     print(f"Final model saved to {final_model_path}")
+
+    # Visualize class distribution and performance
+    try:
+        import matplotlib.pyplot as plt
+
+        # Create plots directory
+        plots_dir = os.path.join(args.checkpoint_dir, "plots")
+        os.makedirs(plots_dir, exist_ok=True)
+
+        # Plot class IoU
+        plt.figure(figsize=(12, 6))
+        plt.bar(range(len(class_ious)), class_ious)
+        plt.axhline(y=test_metrics['mean_iou'], color='r', linestyle='-',
+                    label=f"Mean IoU: {test_metrics['mean_iou']:.4f}")
+        plt.xlabel('Class ID')
+        plt.ylabel('IoU')
+        plt.title('Per-class IoU')
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(plots_dir, "class_iou.png"), dpi=200)
+        plt.close()
+
+        # Plot class F1 scores
+        plt.figure(figsize=(12, 6))
+        plt.bar(range(len(class_f1)), class_f1)
+        plt.axhline(y=test_metrics['mean_f1'], color='r', linestyle='-',
+                    label=f"Mean F1: {test_metrics['mean_f1']:.4f}")
+        plt.xlabel('Class ID')
+        plt.ylabel('F1 Score')
+        plt.title('Per-class F1 Score')
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(plots_dir, "class_f1.png"), dpi=200)
+        plt.close()
+
+        # Plot class weights if available
+        if class_weights is not None:
+            class_weights_np = class_weights.cpu().numpy()
+            plt.figure(figsize=(12, 6))
+            plt.bar(range(len(class_weights_np)), class_weights_np)
+            plt.xlabel('Class ID')
+            plt.ylabel('Weight')
+            plt.title('Class Weights for Handling Imbalance')
+            plt.tight_layout()
+            plt.savefig(os.path.join(plots_dir, "class_weights.png"), dpi=200)
+            plt.close()
+
+        print(f"Performance visualizations saved to {plots_dir}")
+    except Exception as e:
+        print(f"Warning: Could not create visualizations: {e}")
 
 
 def save_segmentation_results(model, data_loader, output_dir, device, color_map=None, save_metrics=True):
@@ -1131,7 +1365,11 @@ def generate_performance_report(model_info, metrics, class_performance, output_p
         f.write(f"- Input Resolution: {model_info.get('height', 1208)}x{model_info.get('width', 1920)}\n")
         f.write(f"- Number of Classes: {model_info.get('classes', 'Unknown')}\n")
         f.write(f"- Training Epochs: {model_info.get('epochs', 'Unknown')}\n")
-        f.write(f"- Loss Function: {model_info.get('loss', 'CrossEntropy')}\n\n")
+        f.write(f"- Loss Function: {model_info.get('loss', 'CrossEntropy')}\n")
+        f.write(
+            f"- Data Augmentation: {'Enabled' if ast.literal_eval(model_info.get('augment', 'False')) else 'Disabled'}\n")
+        f.write(
+            f"- Class Imbalance Handling: {'Enabled' if ast.literal_eval(model_info.get('handle_imbalance', 'False')) else 'Disabled'}\n\n")
 
         # Overall metrics
         f.write("## Overall Performance Metrics\n\n")
