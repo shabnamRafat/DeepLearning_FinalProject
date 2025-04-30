@@ -8,9 +8,11 @@ from pathlib import Path
 from PIL import Image
 import numpy as np
 import os
+import json
 import matplotlib.pyplot as plt
 import seaborn as sns
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
 # =====================
 # PAGE SETUP
 # =====================
@@ -26,48 +28,46 @@ st.sidebar.header("📂 Select Files and Settings")
 model_path = st.sidebar.text_input("Path to Trained Model (.pth)", "/path/to/model.pth")
 test_image_dir = st.sidebar.text_input("Path to Test Images", "/path/to/test/images")
 test_mask_dir = st.sidebar.text_input("Path to Test Masks (Optional)", "/path/to/test/masks")
+class_list_path = st.sidebar.text_input("Path to class_list.json", "/path/to/class_list.json")
 
 start_eval = st.sidebar.button("🔎 Run Evaluation")
-
-if os.path.isdir(model_path):
-    model_path = os.path.join(model_path, "best_model.pth")
 
 if not os.path.exists(model_path):
     st.error(f"❌ Model path not found: {model_path}")
     st.stop()
 
 # =====================
-# RGB TO CLASS MAPPING
-# =====================
-rgb_to_class = {
-    (255, 0, 0): 0, (200, 0, 0): 1, (150, 0, 0): 2, (128, 0, 0): 3,
-    (182, 89, 6): 4, (150, 50, 4): 5, (90, 30, 1): 6, (90, 30, 30): 7,
-    (204, 153, 255): 8, (189, 73, 155): 9, (239, 89, 191): 10,
-    (255, 128, 0): 11, (200, 128, 0): 12, (150, 128, 0): 13,
-    (0, 255, 0): 14, (0, 200, 0): 15, (0, 150, 0): 16,
-    (0, 128, 255): 17, (30, 28, 158): 18, (60, 28, 100): 19,
-    (0, 255, 255): 20, (30, 220, 220): 21, (60, 157, 199): 22,
-    (255, 255, 0): 23, (255, 255, 200): 24, (233, 100, 0): 25,
-    (110, 110, 0): 26, (128, 128, 0): 27, (255, 193, 37): 28,
-    (64, 0, 64): 29, (185, 122, 87): 30, (0, 0, 100): 31,
-    (139, 99, 108): 32, (210, 50, 115): 33, (255, 0, 128): 34,
-    (255, 246, 143): 35, (150, 0, 150): 36, (204, 255, 153): 37,
-    (238, 162, 173): 38, (33, 44, 177): 39, (180, 50, 180): 40,
-    (255, 70, 185): 41, (238, 233, 191): 42, (147, 253, 194): 43,
-    (150, 150, 200): 44, (180, 150, 200): 45, (72, 209, 204): 46,
-    (200, 125, 210): 47, (159, 121, 238): 48, (128, 0, 255): 49,
-    (255, 0, 255): 50, (135, 206, 255): 51, (241, 230, 255): 52,
-    (96, 69, 143): 53, (53, 46, 82): 54
-}
-class_names = list(rgb_to_class.values())
-
-# =====================
 # FUNCTIONS
 # =====================
+def load_class_map(json_path):
+    import re
+    from matplotlib.colors import to_rgb
+
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+
+    class_map = {}
+    class_names = []
+    idx = 0
+
+    hex_color_regex = re.compile(r'^#(?:[0-9a-fA-F]{6})$')
+
+    for hex_code, label in data.items():
+        if hex_color_regex.match(hex_code):
+            rgb = tuple(int(hex_code[i:i+2], 16) for i in (1, 3, 5))  # Convert #rrggbb to (r, g, b)
+            class_map[rgb] = idx
+            class_names.append(label)
+            idx += 1
+        else:
+            raise ValueError(f"Invalid hex color: {hex_code}")
+
+    return class_map, class_names
+
 class TestDataset(Dataset):
-    def __init__(self, image_dir, mask_dir=None, height=640, width=640):
+    def __init__(self, image_dir, mask_dir=None, rgb_to_class=None, height=640, width=640):
         self.image_paths = sorted(list(Path(image_dir).glob("*.png")))
         self.mask_paths = sorted(list(Path(mask_dir).glob("*.png"))) if mask_dir else None
+        self.rgb_to_class = rgb_to_class or {}
         self.img_transform = transforms.Compose([
             transforms.Resize((height, width)),
             transforms.ToTensor()
@@ -85,8 +85,8 @@ class TestDataset(Dataset):
             mask = Image.open(self.mask_paths[idx]).convert("RGB")
             mask = np.array(self.mask_resize(mask))
             label_mask = np.zeros(mask.shape[:2], dtype=np.int64)
-            for rgb, idx_class in rgb_to_class.items():
-                label_mask[np.all(mask == rgb, axis=-1)] = idx_class
+            for rgb, class_idx in self.rgb_to_class.items():
+                label_mask[np.all(mask == rgb, axis=-1)] = class_idx
             return img_tensor, torch.from_numpy(label_mask)
         else:
             return img_tensor, torch.zeros((img_tensor.shape[1], img_tensor.shape[2]), dtype=torch.int64)
@@ -100,18 +100,72 @@ def _fast_hist(pred, label, num_classes):
     return hist
 
 def compute_metrics(hist):
-    intersection = torch.diag(hist)
-    union = hist.sum(dim=1) + hist.sum(dim=0) - intersection
-    iou = intersection.float() / (union.float().clamp(min=1))
-    pixel_acc = intersection.sum().float() / hist.sum().float().clamp(min=1)
-    return iou.mean().item(), pixel_acc.item(), iou.cpu().numpy()
+    """
+    Compute detailed segmentation metrics from the confusion matrix.
+
+    Args:
+        hist (Tensor): Confusion matrix (num_classes x num_classes)
+
+    Returns:
+        dict: Dictionary of per-class and aggregate metrics
+    """
+    TP = torch.diag(hist)
+    FP = hist.sum(dim=0) - TP
+    FN = hist.sum(dim=1) - TP
+
+    # Avoid division by zero
+    denominator_iou = TP + FP + FN
+    denominator_precision = TP + FP
+    denominator_recall = TP + FN
+    denominator_f1 = 2 * TP + FP + FN
+
+    # IoU (Intersection over Union)
+    iou = TP.float() / denominator_iou.float().clamp(min=1)
+    mean_iou = iou.mean().item()
+
+    # Pixel Accuracy
+    pixel_acc = TP.sum().float() / hist.sum().float().clamp(min=1)
+
+    # Recall
+    recall = TP.float() / denominator_recall.float().clamp(min=1)
+    mean_recall = recall.mean().item()
+
+    # Precision
+    precision = TP.float() / denominator_precision.float().clamp(min=1)
+    mean_precision = precision.mean().item()
+
+    # F1 Score
+    f1 = 2 * precision * recall / (precision + recall).clamp(min=1e-7)
+    mean_f1 = f1.mean().item()
+
+    # Dice Coefficient (same formula as F1 for segmentation)
+    dice = 2 * TP.float() / denominator_f1.float().clamp(min=1)
+    mean_dice = dice.mean().item()
+
+    # Boundary F1 Score placeholder (same as mean F1 for now)
+    bf_score = mean_f1
+
+    return {
+        'iou': iou,
+        'mean_iou': mean_iou,
+        'pixel_acc': pixel_acc.item(),
+        'recall': recall,
+        'mean_recall': mean_recall,
+        'precision': precision,
+        'mean_precision': mean_precision,
+        'f1_score': f1,
+        'mean_f1': mean_f1,
+        'dice': dice,
+        'mean_dice': mean_dice,
+        'bf_score': bf_score
+    }
 
 def visualize_overlap(pred_mask, true_mask):
     overlap_map = np.zeros((pred_mask.shape[0], pred_mask.shape[1], 3), dtype=np.uint8)
     match = pred_mask == true_mask
-    overlap_map[match] = [0, 255, 0]  # TP: green
-    overlap_map[(pred_mask != true_mask) & (pred_mask != 0)] = [255, 0, 0]  # FP: red
-    overlap_map[(pred_mask != true_mask) & (true_mask != 0)] = [0, 0, 255]  # FN: blue
+    overlap_map[match] = [0, 255, 0]  # TP
+    overlap_map[(pred_mask != true_mask) & (pred_mask != 0)] = [255, 0, 0]  # FP
+    overlap_map[(pred_mask != true_mask) & (true_mask != 0)] = [0, 0, 255]  # FN
     return overlap_map
 
 def plot_classwise_iou(iou_per_class, class_names):
@@ -123,34 +177,40 @@ def plot_classwise_iou(iou_per_class, class_names):
     ax.set_title("Class-wise IoU")
     st.pyplot(fig)
 
-def plot_confusion_matrix(hist, class_names):
-    cm = hist.cpu().numpy()
-    fig, ax = plt.subplots(figsize=(10, 8))
-    sns.heatmap(cm, xticklabels=class_names, yticklabels=class_names, cmap='viridis', norm='log')
-    ax.set_xlabel("Predicted")
-    ax.set_ylabel("Actual")
-    ax.set_title("Confusion Matrix (log scale)")
-    st.pyplot(fig)
 
 @st.cache_resource
 def load_model(model_path, device, num_classes=55):
     model = torch.hub.load("pytorch/vision:v0.10.0", "deeplabv3_resnet50", pretrained=False, num_classes=num_classes)
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    checkpoint = torch.load(model_path, map_location=device)
+
+    if 'model_state_dict' in checkpoint:
+        model.load_state_dict(checkpoint['model_state_dict'])
+    else:
+        model.load_state_dict(checkpoint)
+
     model = model.to(device)
     model.eval()
     return model
+
 
 # =====================
 # MAIN LOGIC
 # =====================
 if start_eval:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = load_model(model_path, device)
+    if not os.path.exists(class_list_path):
+        st.error("class_list.json path is invalid.")
+        st.stop()
 
-    test_dataset = TestDataset(test_image_dir, test_mask_dir)
+    rgb_to_class, class_names = load_class_map(class_list_path)
+    num_classes = len(class_names)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = load_model(model_path, device, num_classes=num_classes)
+
+    test_dataset = TestDataset(test_image_dir, test_mask_dir, rgb_to_class)
     test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False)
 
-    hist = torch.zeros(55, 55, dtype=torch.int64, device=device)
+    hist = torch.zeros(num_classes, num_classes, dtype=torch.int64, device=device)
     preds_list, masks_list = [], []
 
     for images, masks in test_loader:
@@ -160,24 +220,29 @@ if start_eval:
             preds = outputs.argmax(dim=1)
             preds_list.append(preds.cpu().numpy())
             masks_list.append(masks.cpu().numpy())
-            hist += _fast_hist(preds.view(-1), masks.view(-1), 55)
-
-    mean_iou, pixel_acc, iou_per_class = compute_metrics(hist)
+            hist += _fast_hist(preds.view(-1), masks.view(-1), num_classes)
+    metrics = compute_metrics(hist)
+    mean_iou = metrics['mean_iou']
+    pixel_acc = metrics['pixel_acc']
+    iou_per_class = metrics['iou']
 
     st.success("✅ Evaluation Completed!")
-    st.metric("Mean IoU", f"{mean_iou:.4f}")
-    st.metric("Pixel Accuracy", f"{pixel_acc:.4f}")
+    st.markdown("### 📊 Evaluation Metrics")
 
-    # Plot classwise IoU
-    fig1, ax1 = plt.subplots(figsize=(12, 5))
-    ax1.bar(range(len(class_names)), iou_per_class)
-    ax1.set_xticks(range(len(class_names)))
-    ax1.set_xticklabels(class_names, rotation=90)
-    ax1.set_ylabel("IoU")
-    ax1.set_title("Class-wise IoU")
-    st.pyplot(fig1)
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Mean IoU", f"{metrics['mean_iou']:.4f}")
+        st.metric("Mean Dice", f"{metrics['mean_dice']:.4f}")
+        st.metric("Boundary F1", f"{metrics['bf_score']:.4f}")
+    with col2:
+        st.metric("Pixel Accuracy", f"{metrics['pixel_acc']:.4f}")
+        st.metric("Mean Recall", f"{metrics['mean_recall']:.4f}")
+    with col3:
+        st.metric("Mean F1 Score", f"{metrics['mean_f1']:.4f}")
+        st.metric("Mean Precision", f"{metrics['mean_precision']:.4f}")
 
-    # Visualize one sample
+    plot_classwise_iou(metrics['iou'], class_names)
+
     pred_sample = preds_list[0][0]
     mask_sample = masks_list[0][0]
     overlap_img = visualize_overlap(pred_sample, mask_sample)
