@@ -16,6 +16,26 @@ from torch.utils.data import DataLoader, Subset
 from torchvision.transforms import Resize
 from torchvision.transforms.functional import InterpolationMode
 
+# Import custom utility functions
+# Add the utils directory to the path
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+utils_dir = os.path.join(parent_dir, "utils")
+sys.path.append(utils_dir)
+
+# Import utility functions
+from utils_1 import (
+    _fast_hist,
+    compute_metrics,
+    save_segmentation_results,
+    generate_class_activation_maps,
+    analyze_class_performance,
+    generate_performance_report,
+    load_color_map,
+    FocalLoss,
+    DiceLoss,
+    CombinedLoss
+)
 
 import torch
 import gc
@@ -28,61 +48,12 @@ gc.collect()
 torch.backends.cudnn.benchmark = True
 
 # allow importing your custom dataset from ../dataset-loading
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-utils_dir = os.path.join(parent_dir, "dataset-loading")
-sys.path.insert(0, utils_dir)
+dataset_dir = os.path.join(parent_dir, "dataset-loading")
+sys.path.insert(0, dataset_dir)
 
-from Data_Preprocessing import A2D2_CSV_dataset  # your CSV‐based Dataset
+from Data_Preprocessing import A2D2_CSV_dataset
 
 warnings.filterwarnings("ignore")
-
-
-def _fast_hist(pred, label, num_classes):
-    """Confusion‐matrix histogram for one flattened batch."""
-    mask = (label >= 0) & (label < num_classes)
-    hist = torch.bincount(
-        num_classes * label[mask] + pred[mask],
-        minlength=num_classes ** 2
-    ).reshape(num_classes, num_classes)
-    return hist
-
-
-def compute_metrics(hist):
-    """Compute per-class IoU, mean IoU, and pixel accuracy from hist."""
-    intersection = torch.diag(hist)
-    union = hist.sum(dim=1) + hist.sum(dim=0) - intersection
-    iou = intersection.float() / (union.float().clamp(min=1))
-    pixel_acc = intersection.sum().float() / hist.sum().float().clamp(min=1)
-
-    # Add recall and precision metrics
-    recall = intersection.float() / hist.sum(dim=1).float().clamp(min=1)
-    precision = intersection.float() / hist.sum(dim=0).float().clamp(min=1)
-
-    # Add F1 score
-    f1_score = 2 * precision * recall / (precision + recall).clamp(min=1e-7)
-
-    # Add Dice coefficient
-    dice = (2 * intersection.float()) / (hist.sum(dim=1) + hist.sum(dim=0)).float().clamp(min=1)
-
-    # Calculate Boundary F1 Score (BF) - simplified version
-    # This is a placeholder - real boundary detection requires more complex processing
-    bf_score = f1_score  # In real implementation, this would focus on boundary pixels
-
-    return {
-        'iou': iou,
-        'mean_iou': iou.mean().item(),
-        'pixel_acc': pixel_acc.item(),
-        'recall': recall,
-        'mean_recall': recall.mean().item(),
-        'precision': precision,
-        'mean_precision': precision.mean().item(),
-        'f1_score': f1_score,
-        'mean_f1': f1_score.mean().item(),
-        'dice': dice,
-        'mean_dice': dice.mean().item(),
-        'bf_score': bf_score.mean().item()
-    }
 
 
 def create_deeplabv3plus_resnet50(num_classes):
@@ -249,61 +220,6 @@ if __name__ == "__main__":
         drop_last=False, prefetch_factor=args.prefetch,
         persistent_workers=True,
     )
-
-
-    # Define custom loss functions
-    class FocalLoss(nn.Module):
-        def __init__(self, gamma=2.0, alpha=0.25):
-            super(FocalLoss, self).__init__()
-            self.gamma = gamma
-            self.alpha = alpha
-            self.ce = nn.CrossEntropyLoss(reduction='none')
-
-        def forward(self, input, target):
-            logp = self.ce(input, target)
-            p = torch.exp(-logp)
-            loss = (1 - p) ** self.gamma * logp
-            return loss.mean()
-
-
-    class DiceLoss(nn.Module):
-        def __init__(self, smooth=1.0):
-            super(DiceLoss, self).__init__()
-            self.smooth = smooth
-
-        def forward(self, input, target):
-            N, C = input.size(0), input.size(1)
-
-            input_soft = torch.softmax(input, dim=1)
-
-            # Create one-hot encoding for target
-            target_one_hot = torch.zeros_like(input_soft)
-            target_one_hot.scatter_(1, target.unsqueeze(1), 1)
-
-            # Flatten all dimensions except batch
-            input_flat = input_soft.view(N, C, -1)
-            target_flat = target_one_hot.view(N, C, -1)
-
-            intersection = (input_flat * target_flat).sum(dim=2)
-            union = input_flat.sum(dim=2) + target_flat.sum(dim=2)
-
-            dice = (2 * intersection + self.smooth) / (union + self.smooth)
-            loss = 1 - dice.mean()
-            return loss
-
-
-    class CombinedLoss(nn.Module):
-        def __init__(self, dice_weight=0.5, focal_weight=0.5, gamma=2.0, alpha=0.25):
-            super(CombinedLoss, self).__init__()
-            self.dice_weight = dice_weight
-            self.focal_weight = focal_weight
-            self.dice_loss = DiceLoss()
-            self.focal_loss = FocalLoss(gamma=gamma, alpha=alpha)
-
-        def forward(self, input, target):
-            return self.dice_weight * self.dice_loss(input, target) + \
-                self.focal_weight * self.focal_loss(input, target)
-
 
     # Model, loss, optimizer, AMP
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -557,128 +473,24 @@ if __name__ == "__main__":
     }, final_model_path)
     print(f"Final model saved to {final_model_path}")
 
+    # Get class names if available
+    class_names = {}
+    try:
+        with open(args.class_list, 'r') as f:
+            class_data = json.load(f)
 
-def save_segmentation_results(model, data_loader, output_dir, device, color_map=None, save_metrics=True):
-    """
-    Run inference on a dataset and save segmentation output images and metrics
+        # Adapt to your class_list.json format
+        for name, data in class_data.items():
+            if isinstance(data, dict) and 'id' in data:
+                class_names[data['id']] = name
+            elif isinstance(data, int):
+                class_names[data] = name
+    except Exception as e:
+        print(f"Could not load class names: {e}")
+        class_names = None
 
-    Args:
-        model: Trained segmentation model
-        data_loader: DataLoader containing images to segment
-        output_dir: Directory where to save output masks
-        device: Device to run inference on
-        color_map: Optional dictionary mapping class IDs to RGB colors
-        save_metrics: Whether to save per-image metrics
-    """
-    import numpy as np
-    from PIL import Image
-
-    os.makedirs(output_dir, exist_ok=True)
-    model.eval()
-
-    all_metrics = []
-
-    with torch.no_grad():
-        for i, (inputs, targets) in enumerate(data_loader):
-            inputs = inputs.to(device)
-            targets = targets.to(device)
-
-            outputs = model(inputs)["out"]
-            preds = outputs.argmax(dim=1)
-
-            # Compute metrics for this batch
-            batch_hist = torch.zeros(outputs.size(1), outputs.size(1), dtype=torch.int64, device=device)
-            for j in range(preds.size(0)):
-                pred_flat = preds[j].view(-1)
-                target_flat = targets[j].view(-1)
-                batch_hist += _fast_hist(pred_flat, target_flat, outputs.size(1))
-
-            batch_metrics = compute_metrics(batch_hist)
-
-            # Convert tensors to CPU/numpy for saving results
-            preds_cpu = preds.cpu().numpy()
-            targets_cpu = targets.cpu().numpy()
-
-            # Save each prediction in the batch
-            for j, pred in enumerate(preds_cpu):
-                img_metrics = {}
-
-                # Calculate per-image metrics
-                if save_metrics:
-                    img_hist = _fast_hist(
-                        torch.from_numpy(pred.flatten()).to(device),
-                        torch.from_numpy(targets_cpu[j].flatten()).to(device),
-                        outputs.size(1)
-                    )
-                    img_metrics = compute_metrics(img_hist)
-                    # Convert tensor values to Python types for JSON serialization
-                    img_metrics = {k: v if isinstance(v, (int, float)) else v.tolist()
-                                   for k, v in img_metrics.items()}
-
-                # Convert class predictions to RGB if color map provided
-                if color_map:
-                    rgb_mask = np.zeros((pred.shape[0], pred.shape[1], 3), dtype=np.uint8)
-                    for class_id, color in color_map.items():
-                        if isinstance(class_id, str):
-                            class_id = int(class_id)
-                        rgb_mask[pred == class_id] = color
-                    img = Image.fromarray(rgb_mask)
-                else:
-                    # Otherwise save as grayscale class ID image
-                    img = Image.fromarray(pred.astype(np.uint8))
-
-                # Save the image
-                img_filename = f"prediction_{i}_{j}.png"
-                img_path = os.path.join(output_dir, img_filename)
-                img.save(img_path)
-
-                # Save metrics for this image if requested
-                if save_metrics:
-                    metrics_filename = f"metrics_{i}_{j}.json"
-                    metrics_path = os.path.join(output_dir, metrics_filename)
-                    with open(metrics_path, 'w') as f:
-                        json.dump(img_metrics, f, indent=2)
-
-                # Add to all metrics with image filename
-                if save_metrics:
-                    all_metrics.append({
-                        'filename': img_filename,
-                        'metrics': img_metrics
-                    })
-
-            if i % 10 == 0:
-                print(f"Processed {i} batches")
-
-    # Save overall metrics summary
-    if save_metrics:
-        summary_path = os.path.join(output_dir, "metrics_summary.json")
-        with open(summary_path, 'w') as f:
-            json.dump(all_metrics, f, indent=2)
-
-    print(f"Segmentation results saved to {output_dir}")
-
-
-# Example usage after training
-if __name__ == "__main__" and 'model' in locals():
-    # Load color map from class list
-    with open(args.class_list, 'r') as f:
-        class_info = json.load(f)
-
-    # Convert class info to color map (adjust based on your class_list.json format)
-    color_map = {}
-    for class_name, class_data in class_info.items():
-        try:
-            class_id = class_data.get('id')
-            color = class_data.get('color')
-            if class_id is not None and color is not None:
-                color_map[class_id] = color
-        except (TypeError, AttributeError):
-            # Handle different JSON formats
-            if isinstance(class_data, int):
-                # If class_data is the ID directly
-                class_id = class_data
-                # You might need to generate a color or have a separate color mapping
-                color_map[class_id] = [random.randint(0, 255) for _ in range(3)]
+    # Load color map
+    color_map = load_color_map(args.class_list)
 
     # Create output directories for segmentation results
     train_output_dir = os.path.join(args.checkpoint_dir, "train_segmentation")
@@ -705,104 +517,8 @@ if __name__ == "__main__" and 'model' in locals():
         save_metrics=True
     )
 
-    print(f"All segmentation results saved to {args.checkpoint_dir}")
-
-
-# Visualization function to create class activation maps
-def generate_class_activation_maps(model, data_loader, output_dir, device, num_samples=5):
-    """
-    Generate class activation maps to visualize what the model is focusing on
-
-    Args:
-        model: Trained segmentation model
-        data_loader: DataLoader containing images to analyze
-        output_dir: Directory where to save visualizations
-        device: Device to run inference on
-        num_samples: Number of samples to visualize
-    """
-    import matplotlib.pyplot as plt
-    from matplotlib.colors import LinearSegmentedColormap
-    import numpy as np
-
-    os.makedirs(output_dir, exist_ok=True)
-    model.eval()
-
-    # Create a custom colormap for the heatmap
-    colors = [(0, 0, 0.7), (0, 0.7, 1), (0, 1, 0), (0.7, 1, 0), (1, 0.7, 0), (1, 0, 0)]
-    cmap = LinearSegmentedColormap.from_list('custom_cmap', colors, N=256)
-
-    sample_count = 0
-    with torch.no_grad():
-        for inputs, targets in data_loader:
-            if sample_count >= num_samples:
-                break
-
-            inputs = inputs.to(device)
-
-            # Get model output
-            outputs = model(inputs)["out"]  # Shape: [B, C, H, W]
-
-            # Get predicted class labels
-            preds = outputs.argmax(dim=1)  # Shape: [B, H, W]
-
-            # Get confidence scores (softmax probabilities)
-            probs = torch.softmax(outputs, dim=1)  # Shape: [B, C, H, W]
-
-            # Get max probability for each pixel
-            confidence, _ = probs.max(dim=1)  # Shape: [B, H, W]
-
-            # Process each image in the batch
-            for i in range(inputs.size(0)):
-                if sample_count >= num_samples:
-                    break
-
-                # Convert tensors to numpy for visualization
-                input_img = inputs[i].cpu().permute(1, 2, 0).numpy()
-                pred_mask = preds[i].cpu().numpy()
-                conf_map = confidence[i].cpu().numpy()
-
-                # Normalize image for display
-                input_img = (input_img - input_img.min()) / (input_img.max() - input_img.min())
-
-                # Create figure with subplots
-                fig, axs = plt.subplots(1, 3, figsize=(15, 5))
-
-                # Plot original image
-                axs[0].imshow(input_img)
-                axs[0].set_title('Original Image')
-                axs[0].axis('off')
-
-                # Plot segmentation mask
-                axs[1].imshow(pred_mask, cmap='tab20', vmin=0, vmax=args.classes - 1)
-                axs[1].set_title('Segmentation Prediction')
-                axs[1].axis('off')
-
-                # Plot confidence heatmap
-                im = axs[2].imshow(conf_map, cmap=cmap, vmin=0, vmax=1)
-                axs[2].set_title('Confidence Map')
-                axs[2].axis('off')
-
-                # Add colorbar
-                cbar = fig.colorbar(im, ax=axs[2], orientation='vertical', fraction=0.046, pad=0.04)
-                cbar.set_label('Confidence Score')
-
-                # Save figure
-                plt.tight_layout()
-                plt.savefig(os.path.join(output_dir, f'activation_map_{sample_count}.png'), dpi=200)
-                plt.close(fig)
-
-                sample_count += 1
-
-    print(f"Generated {sample_count} class activation maps in {output_dir}")
-
-
-# Example usage after training
-if __name__ == "__main__" and 'model' in locals():
-    # Create output directory for activation maps
-    activation_maps_dir = os.path.join(args.checkpoint_dir, "activation_maps")
-
     # Generate activation maps
-    print("Generating class activation maps...")
+    activation_maps_dir = os.path.join(args.checkpoint_dir, "activation_maps")
     generate_class_activation_maps(
         model,
         test_loader,
@@ -810,122 +526,6 @@ if __name__ == "__main__" and 'model' in locals():
         device,
         num_samples=10
     )
-
-
-# Class-wise performance analysis
-def analyze_class_performance(model, data_loader, device, class_names=None):
-    """
-    Analyze and report per-class performance metrics
-
-    Args:
-        model: Trained segmentation model
-        data_loader: DataLoader containing images to analyze
-        device: Device to run inference on
-        class_names: Optional dictionary mapping class IDs to names
-
-    Returns:
-        Dictionary of per-class metrics and problem classes
-    """
-    model.eval()
-
-    # Initialize confusion matrix
-    num_classes = next(iter(model.parameters())).size(0)  # Get number of classes from output layer
-    hist = torch.zeros(num_classes, num_classes, dtype=torch.int64, device=device)
-
-    with torch.no_grad():
-        for inputs, targets in data_loader:
-            inputs, targets = inputs.to(device), targets.to(device)
-
-            # Forward pass
-            outputs = model(inputs)["out"]
-            preds = outputs.argmax(dim=1)
-
-            # Update confusion matrix
-            for j in range(targets.size(0)):
-                pred_flat = preds[j].view(-1)
-                target_flat = targets[j].view(-1)
-                hist += _fast_hist(pred_flat, target_flat, num_classes)
-
-    # Compute per-class metrics
-    metrics = compute_metrics(hist)
-
-    # Find problematic classes (low IoU or F1)
-    problem_classes = []
-    class_metrics = {}
-
-    for i in range(num_classes):
-        # Skip classes not present in ground truth
-        if hist.sum(dim=1)[i] == 0:
-            continue
-
-        class_name = class_names[i] if class_names and i in class_names else f"Class {i}"
-
-        class_metrics[class_name] = {
-            'iou': metrics['iou'][i].item(),
-            'precision': metrics['precision'][i].item(),
-            'recall': metrics['recall'][i].item(),
-            'f1': metrics['f1_score'][i].item(),
-            'dice': metrics['dice'][i].item(),
-            'pixel_count': hist.sum(dim=1)[i].item(),
-            'correct_pixels': hist[i, i].item()
-        }
-
-        # Identify problem classes (low IoU or high confusion)
-        if metrics['iou'][i] < 0.5:
-            # Find classes this class is most confused with
-            confusion_with = []
-            for j in range(num_classes):
-                if i != j and hist[i, j] > 0:
-                    confused_name = class_names[j] if class_names and j in class_names else f"Class {j}"
-                    confusion_with.append({
-                        'class': confused_name,
-                        'count': hist[i, j].item(),
-                        'percentage': (hist[i, j] / hist.sum(dim=1)[i]).item() * 100
-                    })
-
-            # Sort by confusion count (descending)
-            confusion_with.sort(key=lambda x: x['count'], reverse=True)
-
-            problem_classes.append({
-                'class_name': class_name,
-                'iou': metrics['iou'][i].item(),
-                'confusion_with': confusion_with[:3]  # Top 3 confused classes
-            })
-
-    # Sort problem classes by IoU (ascending)
-    problem_classes.sort(key=lambda x: x['iou'])
-
-    # Return results
-    return {
-        'class_metrics': class_metrics,
-        'problem_classes': problem_classes,
-        'overall_metrics': {
-            'mean_iou': metrics['mean_iou'],
-            'pixel_acc': metrics['pixel_acc'],
-            'mean_f1': metrics['mean_f1'],
-            'mean_dice': metrics['mean_dice'],
-            'boundary_f1': metrics['bf_score']
-        }
-    }
-
-
-# Example usage after training
-if __name__ == "__main__" and 'model' in locals():
-    # Get class names if available
-    class_names = {}
-    try:
-        with open(args.class_list, 'r') as f:
-            class_data = json.load(f)
-
-        # Adapt to your class_list.json format
-        for name, data in class_data.items():
-            if isinstance(data, dict) and 'id' in data:
-                class_names[data['id']] = name
-            elif isinstance(data, int):
-                class_names[data] = name
-    except Exception as e:
-        print(f"Could not load class names: {e}")
-        class_names = None
 
     # Analyze class performance
     print("Analyzing class performance...")
@@ -936,144 +536,11 @@ if __name__ == "__main__" and 'model' in locals():
         class_names
     )
 
-    # Save results
-    perf_output_path = os.path.join(args.checkpoint_dir, "class_performance.json")
-    with open(perf_output_path, 'w') as f:
-        json.dump(performance_results, f, indent=2)
-
-    # Print problematic classes
-    print("\nPotentially problematic classes:")
-    for problem in performance_results['problem_classes'][:5]:  # Show top 5 problems
-        print(f"- {problem['class_name']}: IoU = {problem['iou']:.4f}")
-        print("  Confused with:")
-        for confusion in problem['confusion_with']:
-            print(f"  - {confusion['class']}: {confusion['percentage']:.1f}%")
-
-    print(f"\nDetailed performance analysis saved to {perf_output_path}")
-
-
-# Optional: Add a function to generate a model performance report
-def generate_performance_report(model_info, metrics, class_performance, output_path):
-    """
-    Generate a comprehensive performance report for the model
-
-    Args:
-        model_info: Dictionary with model information
-        metrics: Dictionary with overall metrics
-        class_performance: Dictionary with class-wise performance
-        output_path: Path to save the report
-    """
-    import matplotlib.pyplot as plt
-    import numpy as np
-
-    # Create the report
-    with open(output_path, 'w') as f:
-        # Header
-        f.write("# Semantic Segmentation Model Performance Report\n\n")
-
-        # Model information
-        f.write("## Model Information\n\n")
-        f.write(f"- Architecture: {model_info.get('network', 'Unknown')}\n")
-        f.write(f"- Backbone: {model_info.get('backbone', 'ResNet-50')}\n")
-        f.write(f"- Input Resolution: {model_info.get('height', 1208)}x{model_info.get('width', 1920)}\n")
-        f.write(f"- Number of Classes: {model_info.get('classes', 'Unknown')}\n")
-        f.write(f"- Training Epochs: {model_info.get('epochs', 'Unknown')}\n")
-        f.write(f"- Loss Function: {model_info.get('loss', 'CrossEntropy')}\n\n")
-
-        # Overall metrics
-        f.write("## Overall Performance Metrics\n\n")
-        f.write(f"- Mean IoU: {metrics.get('mean_iou', 0.0):.4f}\n")
-        f.write(f"- Pixel Accuracy: {metrics.get('pixel_acc', 0.0):.4f}\n")
-        f.write(f"- Mean F1 Score: {metrics.get('mean_f1', 0.0):.4f}\n")
-        f.write(f"- Mean Dice Coefficient: {metrics.get('mean_dice', 0.0):.4f}\n")
-        f.write(f"- Boundary F1 Score: {metrics.get('boundary_f1', 0.0):.4f}\n\n")
-
-        # Class-wise performance
-        f.write("## Class-wise Performance\n\n")
-        f.write("| Class | IoU | Precision | Recall | F1 Score | Dice |\n")
-        f.write("|-------|-----|-----------|--------|----------|------|\n")
-
-        class_metrics = class_performance.get('class_metrics', {})
-        for class_name, metrics in sorted(class_metrics.items(),
-                                          key=lambda x: x[1]['iou'],
-                                          reverse=True):
-            f.write(f"| {class_name} | {metrics['iou']:.4f} | {metrics['precision']:.4f} | ")
-            f.write(f"{metrics['recall']:.4f} | {metrics['f1']:.4f} | {metrics['dice']:.4f} |\n")
-
-        f.write("\n")
-
-        # Problematic classes
-        f.write("## Potentially Problematic Classes\n\n")
-        problem_classes = class_performance.get('problem_classes', [])
-        for i, problem in enumerate(problem_classes[:10]):  # Top 10 problems
-            f.write(f"### {i + 1}. {problem['class_name']} (IoU: {problem['iou']:.4f})\n\n")
-            f.write("Most confused with:\n")
-            for confusion in problem['confusion_with']:
-                f.write(f"- {confusion['class']}: {confusion['percentage']:.1f}%\n")
-            f.write("\n")
-
-        # Recommendations
-        f.write("## Recommendations for Improvement\n\n")
-
-        if problem_classes:
-            f.write("Based on the analysis, consider the following improvements:\n\n")
-
-            # General recommendations
-            f.write("1. **Address Class Imbalance**: For classes with low IoU and low pixel count, consider:\n")
-            f.write("   - Data augmentation focused on underrepresented classes\n")
-            f.write("   - Class weighting in the loss function\n")
-            f.write("   - Oversampling techniques\n\n")
-
-            f.write("2. **Refine Boundary Detection**: If boundary F1 score is low:\n")
-            f.write("   - Consider boundary-aware loss functions\n")
-            f.write("   - Try higher resolution inputs for finer boundaries\n")
-            f.write("   - Add boundary detection auxiliary task\n\n")
-
-            f.write("3. **Targeted Augmentations**: Based on confusion patterns:\n")
-            f.write("   - Increase contrast between commonly confused classes\n")
-            f.write("   - Add more examples of confusing scenarios\n\n")
-
-            # Specific recommendations for top problem classes
-            worst_class = problem_classes[0]['class_name'] if problem_classes else "None"
-            f.write(f"4. **Focus on '{worst_class}'**: This class has the lowest IoU. Consider:\n")
-            f.write("   - Reviewing the annotation quality for this class\n")
-            f.write("   - Adding more training examples\n")
-            f.write("   - Special augmentations to highlight its distinctive features\n\n")
-        else:
-            f.write("The model is performing well across all classes. To further improve:\n\n")
-            f.write(
-                "1. **Fine-tune Hyperparameters**: Experiment with learning rate, batch size, and optimizer settings\n")
-            f.write("2. **Try More Advanced Architectures**: Consider more recent segmentation models\n")
-            f.write("3. **Ensemble Methods**: Combine predictions from multiple models\n\n")
-
-        # Conclusion
-        f.write("## Conclusion\n\n")
-        f.write("The DeepLabV3+ model with ResNet-50 backbone ")
-        if metrics.get('mean_iou', 0) > 0.7:
-            f.write("demonstrates strong performance across most classes. ")
-        elif metrics.get('mean_iou', 0) > 0.5:
-            f.write("shows reasonable performance, but has room for improvement. ")
-        else:
-            f.write("shows baseline functionality, but requires significant improvement. ")
-
-        f.write("The analysis highlights specific classes that need attention, and the ")
-        f.write("recommendations provide concrete steps to improve model performance in future iterations.\n")
-
-    print(f"Performance report generated at {output_path}")
-
-
-# Example usage after training
-if __name__ == "__main__" and 'model' in locals() and 'performance_results' in locals():
-    # Generate performance report
+    # Save performance report
     report_path = os.path.join(args.checkpoint_dir, "performance_report.md")
-
-    # Combine all information for the report
-    model_info = vars(args)
-    overall_metrics = performance_results['overall_metrics']
-
     generate_performance_report(
-        model_info,
-        overall_metrics,
+        vars(args),
+        performance_results['overall_metrics'],
         performance_results,
         report_path
     )
