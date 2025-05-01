@@ -10,7 +10,9 @@ This repository contains our team's final project for the Deep Learning course.
 
 ## Project Overview
 
-This project explores the application of deep learning techniques to solve complex problems in [brief description of your project focus area]. We implement and evaluate various neural network architectures to [main objective of your project].
+While semantic segmentation of urban scenes is a well-established area in computer vision, this project offers an opportunity to deepen our understanding of its practical applications and challenges, especially within the context of autonomous driving. Through the implementation and analysis of segmentation techniques, we aim to explore how fine-grained, pixel-level scene understanding contributes to the broader goal of safe and intelligent vehicle autonomy.
+This work allows us to examine how segmentation models can differentiate between critical classes—such as roads, vehicles, pedestrians, and urban infrastructure—and how these classifications feed into downstream tasks like navigation, obstacle avoidance, and real-time decision-making. By evaluating segmentation accuracy, class imbalance, and model robustness in real-world urban conditions, we gain insight into both the technical limitations and potential enhancements for future systems.
+
 
 ## Repository Structure
 
@@ -39,15 +41,17 @@ DeepLearning_FinalProject/
 Source:
 https://www.a2d2.audi/a2d2/en/download.html
 
-curl -O https://aev-autonomous-driving-dataset.s3.eu-central-1.amazonaws.com/camera_lidar_semantic.tar
-curl -O https://aev-autonomous-driving-dataset.s3.eu-central-1.amazonaws.com/camera_lidar_semantic_instance.tar
-curl -O https://aev-autonomous-driving-dataset.s3.eu-central-1.amazonaws.com/README-SemSeg.txt
+- curl -O https://aev-autonomous-driving-dataset.s3.eu-central-1.amazonaws.com/camera_lidar_semantic.tar
+
+- curl -O https://aev-autonomous-driving-dataset.s3.eu-central-1.amazonaws.com/camera_lidar_semantic_instance.tar
+
+- curl -O https://aev-autonomous-driving-dataset.s3.eu-central-1.amazonaws.com/README-SemSeg.txt
 
 
 # Extract the tar file
 # The tar command handles extraction of .tar files
-tar -xvf camera_lidar_semantic.tar
-tar -xvf camera_lidar_semantic_instance.tar
+- tar -xvf camera_lidar_semantic.tar
+- tar -xvf camera_lidar_semantic_instance.tar
 
 
 ## Notes:
