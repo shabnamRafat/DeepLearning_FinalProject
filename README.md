@@ -48,8 +48,9 @@ https://www.a2d2.audi/a2d2/en/download.html
 - curl -O https://aev-autonomous-driving-dataset.s3.eu-central-1.amazonaws.com/README-SemSeg.txt
 
 
-# Extract the tar file
-# The tar command handles extraction of .tar files
+
+The tar command handles extraction of .tar files
+
 - tar -xvf camera_lidar_semantic.tar
 - tar -xvf camera_lidar_semantic_instance.tar
 
