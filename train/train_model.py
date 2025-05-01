@@ -11,34 +11,28 @@ from torch.utils.data import DataLoader
 from torchvision.transforms import Resize
 from torchvision.transforms.functional import InterpolationMode
 
-# allow importing your custom dataset from ../dataset-loading
+# Import custom utility functions
+# Add the utils directory to the path
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
-utils_dir = os.path.join(parent_dir, "dataset-loading")
-sys.path.insert(0, utils_dir)
+utils_dir = os.path.join(parent_dir, "utils")
+sys.path.append(utils_dir)
+
+# Import utility functions
+from utils_1 import (
+    _fast_hist,
+    compute_metrics,
+    save_segmentation_results,
+    load_color_map
+)
+
+# allow importing your custom dataset from ../dataset-loading
+dataset_dir = os.path.join(parent_dir, "dataset-loading")
+sys.path.insert(0, dataset_dir)
 
 from Data_Preprocessing import A2D2_CSV_dataset  # your CSV‐based Dataset
 
 warnings.filterwarnings("ignore")
-
-
-def _fast_hist(pred, label, num_classes):
-    """Confusion‐matrix histogram for one flattened batch."""
-    mask = (label >= 0) & (label < num_classes)
-    hist = torch.bincount(
-        num_classes * label[mask] + pred[mask],
-        minlength=num_classes**2
-    ).reshape(num_classes, num_classes)
-    return hist
-
-def compute_metrics(hist):
-    """Compute per-class IoU, mean IoU, and pixel accuracy from hist."""
-    intersection = torch.diag(hist)
-    union = hist.sum(dim=1) + hist.sum(dim=0) - intersection
-    iou = intersection.float() / (union.float().clamp(min=1))
-    pixel_acc = intersection.sum().float() / hist.sum().float().clamp(min=1)
-    return iou, iou.mean().item(), pixel_acc.item()
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -197,8 +191,8 @@ if __name__ == "__main__":
                 infer_end = time.time()
 
                 # compute metrics
+                metrics = compute_metrics(hist)
                 avg_val_loss = torch.stack(val_losses).mean().item()
-                per_iou, mean_iou, pix_acc = compute_metrics(hist)
                 num_images = min(len(val_loader) * args.batch, args.eval_size)
                 fps = num_images / (infer_end - infer_start)
 
@@ -207,11 +201,11 @@ if __name__ == "__main__":
                 print(
                     f"batch {i}: "
                     f"Training_loss {loss:.4f}, Val_loss {avg_val_loss:.4f}, "
-                    f"Mean_IoU {mean_iou:.4f}, PixAcc {pix_acc:.4f}, "
+                    f"Mean_IoU {metrics['mean_iou']:.4f}, PixAcc {metrics['pixel_acc']:.4f}, "
                     f"FPS {fps:.2f}"
                 )
 
-        # Save checkpoint after each epoch (this is now inside the epoch loop but outside the batch loop)
+        # Save checkpoint after each epoch
         ckpt = os.path.join(args.checkpoint_dir, f"model-ep{epoch}.pth")
         if os.path.exists(ckpt):
             os.remove(ckpt)
@@ -225,137 +219,22 @@ if __name__ == "__main__":
         with open(latest, "wb") as f:
             torch.save(model.state_dict(), f)
 
-    # final save (outside all loops)
-    torch.save(model.state_dict(), os.path.join(args.checkpoint_dir, "final_model.pth"))  # Fixed the typo here
+    # final save
+    torch.save(model.state_dict(), os.path.join(args.checkpoint_dir, "final_model.pth"))
 
+    # Load color map
+    color_map = load_color_map(args.class_list)
 
-def save_segmentation_results(model, data_loader, output_dir, device, color_map=None):
-    """
-    Run inference on a dataset and save segmentation output images
+    # Create an output directory for the segmentation results
+    output_dir = os.path.join(args.checkpoint_dir, "segmentation_output")
 
-    Args:
-        model: Trained segmentation model
-        data_loader: DataLoader containing images to segment
-        output_dir: Directory where to save output masks
-        device: Device to run inference on
-        color_map: Optional dictionary mapping class IDs to RGB colors
-    """
-    import numpy as np
-    from PIL import Image
-
-    os.makedirs(output_dir, exist_ok=True)
-    model.eval()
-
-    with torch.no_grad():
-        for i, (inputs, _) in enumerate(data_loader):
-            inputs = inputs.to(device)
-            outputs = model(inputs)["out"]
-            preds = outputs.argmax(dim=1).cpu().numpy()
-
-            # Save each prediction in the batch
-            for j, pred in enumerate(preds):
-                # Convert class predictions to RGB if color map provided
-                if color_map:
-                    rgb_mask = np.zeros((pred.shape[0], pred.shape[1], 3), dtype=np.uint8)
-                    for class_id, color in color_map.items():
-                        rgb_mask[pred == class_id] = color
-                    img = Image.fromarray(rgb_mask)
-                else:
-                    # Otherwise save as grayscale class ID image
-                    img = Image.fromarray(pred.astype(np.uint8))
-
-                # Save the image
-                img.save(os.path.join(output_dir, f"prediction_{i}_{j}.png"))
-
-            if i % 10 == 0:
-                print(f"Processed {i} batches")
-
-
-# final save
-torch.save(model.state_dict(), os.path.join(args.checkpoint_dir, "final_model.pth"))
-
-
-# Add the function to save segmentation results
-def save_segmentation_results(model, data_loader, output_dir, device, color_map=None):
-    """
-    Run inference on a dataset and save segmentation output images
-    """
-    import numpy as np
-    from PIL import Image
-
-    os.makedirs(output_dir, exist_ok=True)
-    model.eval()
-
-    with torch.no_grad():
-        for i, (inputs, _) in enumerate(data_loader):
-            inputs = inputs.to(device)
-            outputs = model(inputs)["out"]
-            preds = outputs.argmax(dim=1).cpu().numpy()
-
-            # Save each prediction in the batch
-            for j, pred in enumerate(preds):
-                # Convert class predictions to RGB if color map provided
-                if color_map:
-                    rgb_mask = np.zeros((pred.shape[0], pred.shape[1], 3), dtype=np.uint8)
-                    for class_id, color in color_map.items():
-                        rgb_mask[pred == class_id] = color
-                    img = Image.fromarray(rgb_mask)
-                else:
-                    # Otherwise save as grayscale class ID image
-                    img = Image.fromarray(pred.astype(np.uint8))
-
-                # Save the image
-                img.save(os.path.join(output_dir, f"prediction_{i}_{j}.png"))
-
-            if i % 10 == 0:
-                print(f"Processed {i} batches")
-
-
-# Load color map from class list
-# Load color map from class list
-import json
-
-with open(args.class_list, 'r') as f:
-    class_info = json.load(f)
-
-# Try to determine the format and adapt
-color_map = {}
-try:
-    # Check if class_info is a list of dictionaries with 'id' and 'color' fields
-    if isinstance(class_info, list):
-        for item in class_info:
-            if isinstance(item, dict) and 'id' in item and 'color' in item:
-                color_map[item['id']] = item['color']
-    # Check if class_info is a dictionary with class names as keys
-    elif isinstance(class_info, dict):
-        for class_name, class_data in class_info.items():
-            if isinstance(class_data, dict):
-                # Format: {"class_name": {"id": 1, "color": [r,g,b]}}
-                if 'id' in class_data and 'color' in class_data:
-                    color_map[class_data['id']] = class_data['color']
-            else:
-                # Format might be {"class_id": [r,g,b]}
-                try:
-                    class_id = int(class_name)  # Try converting key to integer
-                    if isinstance(class_data, list) and len(class_data) == 3:
-                        color_map[class_id] = class_data
-                except (ValueError, TypeError):
-                    pass  # Not a valid integer key
-except Exception as e:
-    print(f"Warning: Error processing class list: {e}")
-    print("Using default grayscale output instead of color mapping")
-    color_map = None
-
-# Create an output directory for the segmentation results
-output_dir = os.path.join(args.checkpoint_dir, "segmentation_output")
-
-# Run inference and save results
-print("Generating segmentation outputs...")
-save_segmentation_results(
-    model,
-    val_loader,  # You can use your val_loader or test_loader here
-    output_dir,
-    device,
-    color_map
-)
-print(f"Segmentation results saved to {output_dir}")
+    # Run inference and save results
+    print("Generating segmentation outputs...")
+    save_segmentation_results(
+        model,
+        val_loader,
+        output_dir,
+        device,
+        color_map
+    )
+    print(f"Segmentation results saved to {output_dir}")
